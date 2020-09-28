@@ -1,79 +1,188 @@
 package com.matt.forgehax.mods;
 
 import static com.matt.forgehax.Helper.getLocalPlayer;
+import static com.matt.forgehax.Helper.getPlayerController;
 import static com.matt.forgehax.Helper.getNetworkManager;
 
+import com.matt.forgehax.asm.events.PacketEvent;
+
 import com.matt.forgehax.events.LocalPlayerUpdateEvent;
-import com.matt.forgehax.util.Switch.Handle;
+import com.matt.forgehax.util.SimpleTimer;
 import com.matt.forgehax.util.command.Setting;
-import com.matt.forgehax.util.entity.LocalPlayerUtils;
 import com.matt.forgehax.util.mod.Category;
 import com.matt.forgehax.util.mod.ToggleMod;
 import com.matt.forgehax.util.mod.loader.RegisterMod;
+
+import net.minecraft.client.gui.inventory.GuiInventory;
+import net.minecraft.init.Items;
+import net.minecraft.inventory.ClickType;
+import net.minecraft.item.ItemStack;
 import net.minecraft.network.play.client.CPacketEntityAction;
 import net.minecraft.network.play.client.CPacketEntityAction.Action;
+import net.minecraft.network.play.server.SPacketEntityMetadata;
+import net.minecraft.network.play.server.SPacketSetSlot;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
-import net.minecraftforge.fml.relauncher.Side;
-import net.minecraftforge.fml.relauncher.SideOnly;
+import net.minecraftforge.fml.common.gameevent.TickEvent;
 
+/**
+ * Created on 14/07/2020 by tonio coz Constantiam has not that good anti-elytra
+ */
 @RegisterMod
-public class ElytraFlight extends ToggleMod {
+public class AutoElytra extends ToggleMod {
+
+  private final Setting<Boolean> no_disequip =
+    getCommandStub()
+      .builders()
+      .<Boolean>newSettingBuilder()
+      .name("no-disequip")
+      .description("Prevent elytra from being disequipped")
+      .defaultTo(false)
+      .build();
+
+  private final Setting<Boolean> disequip =
+    getCommandStub()
+      .builders()
+      .<Boolean>newSettingBuilder()
+      .name("disequip")
+      .description("Remove chest on enable")
+      .defaultTo(false)
+      .build();
+
+  private final Setting<Boolean> reopen =
+    getCommandStub()
+      .builders()
+      .<Boolean>newSettingBuilder()
+      .name("reopen")
+      .description("Open elytra automatically")
+      .defaultTo(true)
+      .build();
+
+  private final Setting<Integer> reopen_interval =
+    getCommandStub()
+      .builders()
+      .<Integer>newSettingBuilder()
+      .name("open-cd")
+      .description("Cooldown in ms of elytra reopen packets")
+      .min(0)
+      .max(3000)
+      .defaultTo(500)
+      .build();
+
+  private final Setting<Boolean> reequip =
+    getCommandStub()
+      .builders()
+      .<Boolean>newSettingBuilder()
+      .name("reequip")
+      .description("Reequip elytras automatically")
+      .defaultTo(false)
+      .build();
+    
+  private final Setting<Integer> cooldown_reequip =
+    getCommandStub()
+      .builders()
+      .<Integer>newSettingBuilder()
+      .name("equip-cd")
+      .description("Cooldown in ms of elytra reequip actions")
+      .min(0)
+      .max(5000)
+      .defaultTo(20)
+      .build();
+
+  private final Setting<Boolean> cancel_ghost =
+    getCommandStub()
+      .builders()
+      .<Boolean>newSettingBuilder()
+      .name("ghost-cancel")
+      .description("Prevent elytras appearing in inventory")
+      .defaultTo(false)
+      .build();
+
+  private final Setting<Boolean> discreet =
+    getCommandStub()
+      .builders()
+      .<Boolean>newSettingBuilder()
+      .name("discreet")
+      .description("Only reequip when midair and not wearing an elytra")
+      .defaultTo(true)
+      .build();
+
+  private final Setting<Boolean> cancel_close =
+    getCommandStub()
+      .builders()
+      .<Boolean>newSettingBuilder()
+      .name("cancel-close")
+      .description("Cancel Elytra Close packets")
+      .defaultTo(false)
+      .build();
   
-  public final Setting<Boolean> fly_on_enable =
-      getCommandStub()
-          .builders()
-          .<Boolean>newSettingBuilder()
-          .name("fly_on_enable")
-          .description("Start flying when enabled")
-          .defaultTo(false)
-          .build();
-  
-  public final Setting<Double> speed =
-      getCommandStub()
-          .builders()
-          .<Double>newSettingBuilder()
-          .name("speed")
-          .description("Movement speed")
-          .defaultTo(0.05D)
-          .build();
-  
-  private final Handle flying = LocalPlayerUtils.getFlySwitch().createHandle(getModName());
-  
-  public ElytraFlight() {
-    super(Category.PLAYER, "ElytraFlight", false, "Elytra Flight");
+  public AutoElytra() {
+    super(Category.EXPLOIT, "AutoElytra", false, "Automatically re-equips and/or deploys elytra");
   }
-  
+
   @Override
   protected void onEnabled() {
-    if (fly_on_enable.get()) {
-      MC.addScheduledTask(
-          () -> {
-            if (getLocalPlayer() != null && !getLocalPlayer().isElytraFlying()) {
-              getNetworkManager()
-                  .sendPacket(new CPacketEntityAction(getLocalPlayer(), Action.START_FALL_FLYING));
-            }
-          });
-    }
+    if (disequip.get() && !getLocalPlayer().inventory.getStackInSlot(6).equals(ItemStack.EMPTY))
+      getPlayerController().windowClick(0, 6, // ChestPlate
+        0, ClickType.QUICK_MOVE, getLocalPlayer());
   }
-  
+
   @Override
-  public void onDisabled() {
-    flying.disable();
-    // Are we still here?
-    if (getLocalPlayer() != null) {
-      // Ensure the player starts flying again.
-      getNetworkManager()
-          .sendPacket(new CPacketEntityAction(getLocalPlayer(), Action.START_FALL_FLYING));
+  protected void onDisabled() {
+    if (disequip.get() && !getLocalPlayer().inventory.getStackInSlot(6).equals(ItemStack.EMPTY))
+      getPlayerController().windowClick(0, 6, // ChestPlate
+        0, ClickType.QUICK_MOVE, getLocalPlayer());
+  }
+
+  int cooldown = 0;
+  private SimpleTimer timer_takeoff = new SimpleTimer();
+  private SimpleTimer timer_reequip = new SimpleTimer();
+
+  @SubscribeEvent
+  public void onIncomingPacket(PacketEvent.Incoming.Pre event) {
+    if (getLocalPlayer() == null) return;
+    if (event.getPacket() instanceof SPacketSetSlot) {
+      SPacketSetSlot packet = (SPacketSetSlot) event.getPacket();
+      if (no_disequip.get() && packet.getSlot() == 6) {
+        event.setCanceled(true);
+      }
+      if (cancel_ghost.get() && packet.getStack().getItem().equals(Items.ELYTRA)) {
+        event.setCanceled(true);
+      }
+    }
+    if (cancel_close.get() && getLocalPlayer().isElytraFlying() &&
+        event.getPacket() instanceof SPacketEntityMetadata) {
+      SPacketEntityMetadata MetadataPacket = event.getPacket();
+      if (MetadataPacket.getEntityId() == getLocalPlayer().getEntityId()) {
+        event.setCanceled(true);
+      }
     }
   }
-  
+
   @SubscribeEvent
-  @SideOnly(Side.CLIENT)
-  public void onLocalPlayerUpdate(LocalPlayerUpdateEvent event) {
-    // Enable our flight as soon as the player starts flying his elytra.
-    if (getLocalPlayer().isElytraFlying()) {
-      flying.enable();
+  public void onTick(TickEvent.ClientTickEvent event) {
+    if (getLocalPlayer() == null ||
+        !timer_reequip.hasTimeElapsed(cooldown_reequip.get()) || 
+        MC.currentScreen instanceof GuiInventory ||
+        (getLocalPlayer().fallDistance <= 0 && discreet.get()))
+      return;
+    for (int i = 0; i < 36; i++) {
+      ItemStack item = getLocalPlayer().inventory.getStackInSlot(i);
+      if (item.getItem().equals(Items.ELYTRA)) {
+        getPlayerController().windowClick(0, (i < 9 ? i + 36 : i), // These fucking indexes omg
+                  0, ClickType.QUICK_MOVE, getLocalPlayer());
+        timer_reequip.start();
+        return;
+      }
     }
-    getLocalPlayer().capabilities.setFlySpeed(speed.getAsFloat());
+  }
+
+  @SubscribeEvent
+  public void onUpdate(LocalPlayerUpdateEvent event) {
+    if (reopen.get() && timer_takeoff.hasTimeElapsed(reopen_interval.get()) &&
+        !getLocalPlayer().isElytraFlying() && getLocalPlayer().fallDistance > 0F) {
+      getNetworkManager()
+        .sendPacket(new CPacketEntityAction(getLocalPlayer(), Action.START_FALL_FLYING));
+      timer_takeoff.start();
+    }
   }
 }
