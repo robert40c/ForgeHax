@@ -26,9 +26,10 @@ import net.minecraftforge.fml.common.gameevent.TickEvent;
 
 /**
  * Created on 14/07/2020 by tonio coz Constantiam has not that good anti-elytra
+ * pasted in by robert40 lol, module in combat section
  */
 @RegisterMod
-public class AutoElytra extends ToggleMod {
+public class ElytraFlight extends ToggleMod {
 
   private final Setting<Boolean> no_disequip =
     getCommandStub()
@@ -116,7 +117,7 @@ public class AutoElytra extends ToggleMod {
       .build();
   
   public AutoElytra() {
-    super(Category.EXPLOIT, "AutoElytra", false, "Automatically re-equips and/or deploys elytra");
+    super(Category.COMBAT, "AutoElytra", false, "Automatically re-equips and/or deploys elytra");
   }
 
   @Override
